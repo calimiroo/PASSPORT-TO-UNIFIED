@@ -48,10 +48,8 @@ countries = [
     "United Kingdom", "United States of America", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 ]
 
-# --- Setup logging ---
 logging.basicConfig(level=logging.INFO)
 
-# --- Setup Page Config ---
 st.set_page_config(page_title="ICP Passport Lookup", layout="wide")
 st.title("🔍 ICP Passport Unified Number Lookup")
 
@@ -63,17 +61,15 @@ if 'unified_to_passport' not in st.session_state: st.session_state.unified_to_pa
 if 'single_res' not in st.session_state: st.session_state.single_res = None
 if 'concurrency_level' not in st.session_state: st.session_state.concurrency_level = 5
 
-# --- Login Form ---
+# --- Login ---
 if not st.session_state.authenticated:
     with st.form("login_form"):
-        st.subheader("🔐 Protected Access")
         pwd_input = st.text_input("Enter Password", type="password")
         if st.form_submit_button("Login"):
             if pwd_input == "Bilkish":
                 st.session_state.authenticated = True
                 st.rerun()
-            else:
-                st.error("Incorrect Password.")
+            else: st.error("Incorrect Password.")
     st.stop()
 
 # --- Helper Functions ---
@@ -85,12 +81,10 @@ def reset_duplicate_trackers():
     st.session_state.unified_to_passport = {}
 
 def get_unique_result(passport_no, unified_str):
-    if not unified_str or unified_str == "Not Found":
-        return unified_str
+    if not unified_str or unified_str == "Not Found": return unified_str
     if unified_str in st.session_state.unified_to_passport:
         existing_passport = st.session_state.unified_to_passport[unified_str]
-        if existing_passport != passport_no:
-            return "Not Found"
+        if existing_passport != passport_no: return "Not Found"
     st.session_state.passport_to_unified[passport_no] = unified_str
     st.session_state.unified_to_passport[unified_str] = passport_no
     return unified_str
@@ -175,9 +169,10 @@ with tab1:
                         return res
                 st.session_state.single_res = asyncio.run(run_single())
             st.rerun()
-    
+
     if st.session_state.single_res:
         res = st.session_state.single_res
+        st.subheader("Result:")
         if res == "Not Found": st.error("Not Found")
         elif res == "ERROR": st.warning("Error Occurred")
         else: st.success(f"Found Unified Number: {res}")
@@ -187,8 +182,8 @@ with tab2:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
-        st.write(f"Total: {len(df)}")
-        concurrency = st.slider("Concurrency", 1, 10, st.session_state.concurrency_level)
+        st.write(f"Total records: {len(df)}")
+        concurrency = st.slider("Concurrency Level", 1, 10, st.session_state.concurrency_level)
         
         if st.button("🚀 Start Batch Search"):
             reset_duplicate_trackers()
@@ -217,17 +212,21 @@ with tab2:
                             results[index] = {"Passport Number": p_num, "Nationality": nat, "Unified Number": res, "Status": status}
                             completed += 1
                             progress_bar.progress(completed/len(df))
-                            stats_area.write(f"Completed: {completed}/{len(df)} | Found: {found}")
-                            live_table_area.dataframe(pd.DataFrame([r for r in results if r]).style.map(color_status, subset=['Status']))
+                            stats_area.markdown(f"**Completed:** {completed}/{len(df)} | **Found:** {found} | **Time:** {format_time(time.time()-start_time)}")
+                            live_table_area.dataframe(pd.DataFrame([r for r in results if r]).style.map(color_status, subset=['Status']), use_container_width=True)
 
                     await asyncio.gather(*[worker(i, row) for i, row in df.iterrows()])
                     await browser.close()
                 return results
 
             st.session_state.batch_results = asyncio.run(run_batch())
-            st.success("Completed!")
+            st.success("Batch Completed!")
 
-# --- Sidebar (إصلاح الخطأ هنا) ---
+        if st.session_state.batch_results:
+            final_df = pd.DataFrame(st.session_state.batch_results)
+            st.download_button("📥 Download Results (CSV)", final_df.to_csv(index=False), "Results.csv")
+
+# --- Sidebar ---
 st.sidebar.markdown("""
 ### 🚨 Important!
 If you see browser errors, run:
