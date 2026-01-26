@@ -1,0 +1,5 @@
+streamlit>=1.0.0
+pandas
+playwright
+twocaptcha  # لو كنت هتستخدمها، وإلا احذفها
+openpyxl  # عشان الاكسل
