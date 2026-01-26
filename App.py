@@ -44,7 +44,7 @@ countries = [
     "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore",
     "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "South Sudan", "Spain", "Sri Lanka",
     "Sudan", "Suriname", "Sweden", "Switzerland", "Syrian Arab Republic", "Tajikistan", "Tanzania", "Thailand", "Timor-Leste",
-    "Togo", "Tonga", "Trinidad and Tobato", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates",
+    "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates",
     "United Kingdom", "United States of America", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 ]
 
@@ -291,7 +291,7 @@ async def run_batch_search_with_updates(df, url, concurrency_level, progress_bar
         # Update live table
         current_df = pd.DataFrame(results)
         styled_df = current_df.style.map(color_status, subset=['Status'])
-        live_table_area.dataframe(styled_df, use_container_width=True, height=400)
+        live_table_area.dataframe(styled_df, width='stretch', height=400)
 
     results = await search_batch_concurrent(df, url, concurrency_level, update_ui)
     return results
@@ -362,7 +362,7 @@ with tab2:
                     'Status': [''] * len(df)
                 })
                 styled_initial_df = initial_df.style.map(color_status, subset=['Status'])
-                live_table_area.dataframe(styled_initial_df, use_container_width=True, height=400)
+                live_table_area.dataframe(styled_initial_df, width='stretch', height=400)
                 
                 with st.spinner("Running batch search... This may take a few minutes."):
                     url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
@@ -390,7 +390,7 @@ with tab2:
                 if filtered_results:
                     current_df = pd.DataFrame(filtered_results)
                     styled_df = current_df.style.map(color_status, subset=['Status'])
-                    st.dataframe(styled_df, use_container_width=True, height=400)
+                    st.dataframe(styled_df, width='stretch', height=400)
 
                     # Calculate found count
                     found_count = sum(1 for r in filtered_results if r.get('Status') == 'Found')
@@ -413,3 +413,10 @@ with tab2:
                             file_name="ICP_Batch_Results.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
+
+# Add installation instructions
+st.sidebar.markdown("""
+### 🚨 Important!
+If you see browser errors, run:
+```bash
+playwright install chromium
