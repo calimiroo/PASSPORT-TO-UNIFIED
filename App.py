@@ -392,17 +392,7 @@ with tab2:
                 # Show completion message with total time and statistics
                 time_str = format_time(total_time)
                 found_count = sum(1 for r in results if r and r.get('Status') == 'Found')
-                
-                # Display final statistics after search completion
                 st.success(f"Batch search completed in {time_str}! Found {found_count} out of {len(df)} entries.")
-                
-                # Show detailed statistics
-                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-                col_stat1.metric("Total Entries", len(df))
-                col_stat2.metric("Completed", len(df))
-                col_stat3.metric("Found", found_count)
-                col_stat4.metric("Time Taken", time_str)
-                
                 st.rerun()
 
             if col_ctrl2.button("⏸️ Pause"):
