@@ -170,11 +170,11 @@ with tab1:
                 st.session_state.single_res = asyncio.run(run_single())
             st.rerun()
 
-    if st.session_state.single_res:
+    if st.session_state.single_res is not None:
         res = st.session_state.single_res
         st.subheader("Result:")
-        if res == "Not Found": st.error("Not Found")
-        elif res == "ERROR": st.warning("Error Occurred")
+        if res == "Not Found": st.error("Unified Number: Not Found")
+        elif res == "ERROR": st.warning("An Error Occurred during search")
         else: st.success(f"Found Unified Number: {res}")
 
 with tab2:
@@ -182,7 +182,7 @@ with tab2:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
-        st.write(f"Total records: {len(df)}")
+        st.write(f"Total records in file: {len(df)}")
         concurrency = st.slider("Concurrency Level", 1, 10, st.session_state.concurrency_level)
         
         if st.button("🚀 Start Batch Search"):
@@ -220,7 +220,7 @@ with tab2:
                 return results
 
             st.session_state.batch_results = asyncio.run(run_batch())
-            st.success("Batch Completed!")
+            st.success("Batch Processing Completed!")
 
         if st.session_state.batch_results:
             final_df = pd.DataFrame(st.session_state.batch_results)
