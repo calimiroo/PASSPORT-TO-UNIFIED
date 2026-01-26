@@ -90,10 +90,9 @@ def get_unique_result(passport_no, unified_str):
     return unified_str
 
 def color_status(val):
-    if val == 'Found': color = '#90EE90'
-    elif val == 'Not Found': color = '#FFCCCB'
-    else: color = '#FFA500'
-    return f'background-color: {color}'
+    if val == 'Found': return 'background-color: #90EE90'
+    elif val == 'Not Found': return 'background-color: #FFCCCB'
+    return 'background-color: #FFA500'
 
 async def solve_captcha(page):
     if not TWO_CAPTCHA_AVAILABLE: return False
@@ -172,63 +171,55 @@ with tab1:
 
     if st.session_state.single_res is not None:
         res = st.session_state.single_res
-        st.subheader("Result:")
-        if res == "Not Found": st.error("Unified Number: Not Found")
-        elif res == "ERROR": st.warning("An Error Occurred during search")
-        else: st.success(f"Found Unified Number: {res}")
+        st.write("---")
+        if res == "Not Found": st.error(f"Passport {p_in}: Unified Number Not Found")
+        elif res == "ERROR": st.warning("Error: Connection or Browser Timeout")
+        else: st.success(f"SUCCESS! Unified Number for {p_in} is: {res}")
 
 with tab2:
     st.subheader("📊 Batch Processing")
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
-        st.write(f"Total records in file: {len(df)}")
-        concurrency = st.slider("Concurrency Level", 1, 10, st.session_state.concurrency_level)
+        st.write(f"Total: {len(df)}")
+        con_level = st.slider("Threads", 1, 10, 5)
         
         if st.button("🚀 Start Batch Search"):
             reset_duplicate_trackers()
-            progress_bar = st.progress(0)
-            stats_area = st.empty()
-            live_table_area = st.empty()
-            start_time = time.time()
+            prog = st.progress(0)
+            st_area = st.empty()
+            tb_area = st.empty()
+            start_t = time.time()
             
             async def run_batch():
-                results = [None] * len(df)
-                completed, found = 0, 0
+                res_list = [None] * len(df)
+                done, found = 0, 0
                 async with async_playwright() as p:
                     browser = await p.chromium.launch(headless=True)
                     context = await browser.new_context()
-                    semaphore = asyncio.Semaphore(concurrency)
+                    sem = asyncio.Semaphore(con_level)
                     url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
                     
-                    async def worker(index, row):
-                        nonlocal completed, found
-                        async with semaphore:
+                    async def worker(idx, row):
+                        nonlocal done, found
+                        async with sem:
                             p_num = str(row['Passport Number']).strip()
                             nat = str(row['Nationality']).strip().upper()
                             res = await search_single_passport_playwright(p_num, nat, url, context)
                             status = "Found" if res not in ["Not Found", "ERROR"] else res
                             if status == "Found": found += 1
-                            results[index] = {"Passport Number": p_num, "Nationality": nat, "Unified Number": res, "Status": status}
-                            completed += 1
-                            progress_bar.progress(completed/len(df))
-                            stats_area.markdown(f"**Completed:** {completed}/{len(df)} | **Found:** {found} | **Time:** {format_time(time.time()-start_time)}")
-                            live_table_area.dataframe(pd.DataFrame([r for r in results if r]).style.map(color_status, subset=['Status']), use_container_width=True)
+                            res_list[idx] = {"Passport": p_num, "Nationality": nat, "Unified": res, "Status": status}
+                            done += 1
+                            prog.progress(done/len(df))
+                            st_area.info(f"Progress: {done}/{len(df)} | Found: {found}")
+                            tb_area.dataframe(pd.DataFrame([r for r in res_list if r]).style.applymap(color_status, subset=['Status']))
 
                     await asyncio.gather(*[worker(i, row) for i, row in df.iterrows()])
                     await browser.close()
-                return results
+                return res_list
 
             st.session_state.batch_results = asyncio.run(run_batch())
-            st.success("Batch Processing Completed!")
+            st.success("Batch completed!")
 
         if st.session_state.batch_results:
-            final_df = pd.DataFrame(st.session_state.batch_results)
-            st.download_button("📥 Download Results (CSV)", final_df.to_csv(index=False), "Results.csv")
-
-# --- Sidebar ---
-st.sidebar.markdown("""
-### 🚨 Important!
-If you see browser errors, run:
-```bash
-playwright install chromium
+            st.download_button("📥 Download Results", pd.DataFrame(st.session_state.batch_results).to_csv(index=False), "Results.csv")
