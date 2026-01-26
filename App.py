@@ -415,8 +415,18 @@ with tab2:
                         )
 
 # Add installation instructions
-st.sidebar.markdown("""
+# Add installation instructions (safe version)
+st.sidebar.markdown(
+    "### 🚨 Important!\n\n"
+    "If you see browser errors like:\n"
+    "`Executable doesn't exist at ...`\n\n"
+    "Run in your terminal:\n\n"
+    "```bash\nplaywright install chromium\n```\n\n"
+    "Or:\n\n"
+    "```bash\nplaywright install\n```"
+)
 ### 🚨 Important!
 If you see browser errors, run:
 ```bash
 playwright install chromium
+
