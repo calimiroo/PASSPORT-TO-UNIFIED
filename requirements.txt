@@ -1,5 +1,5 @@
-streamlit>=1.0.0
+streamlit
 pandas
 playwright
-twocaptcha  # لو كنت هتستخدمها، وإلا احذفها
-openpyxl  # عشان الاكسل
+twocaptcha
+openpyxl
