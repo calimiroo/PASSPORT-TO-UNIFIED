@@ -7,11 +7,15 @@ import sys
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
 # --- API Key for 2Captcha ---
 CAPTCHA_API_KEY = "5d4de2d9ba962a796040bd90b2cac6da"
+
 # --- مكتبة 2Captcha ---
 try:
     from twocaptcha import TwoCaptcha
@@ -19,6 +23,7 @@ try:
 except ImportError:
     TWO_CAPTCHA_AVAILABLE = False
     logging.warning("twocaptcha not installed. CAPTCHA solving will be skipped.")
+
 # --- قائمة الدول ---
 countries = [
     "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria",
@@ -42,11 +47,14 @@ countries = [
     "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates",
     "United Kingdom", "United States of America", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 ]
+
 # --- Setup logging ---
 logging.basicConfig(level=logging.INFO)
+
 # --- Setup Page Config ---
 st.set_page_config(page_title="ICP Passport Lookup", layout="wide")
 st.title("🔍 ICP Passport Unified Number Lookup")
+
 # --- Session State Management ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -68,6 +76,7 @@ if 'deep_processed' not in st.session_state:
     st.session_state.deep_processed = 0
 if 'concurrency_level' not in st.session_state:
     st.session_state.concurrency_level = 5
+
 # --- Login Form ---
 if not st.session_state.authenticated:
     with st.form("login_form"):
@@ -86,6 +95,7 @@ if not st.session_state.authenticated:
             else:
                 st.error("Incorrect Password.")
     st.stop()
+
 # --- Helper Functions ---
 def format_time(seconds):
     """Format time to show hours, minutes, seconds without days."""
@@ -94,9 +104,11 @@ def format_time(seconds):
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
 def reset_duplicate_trackers():
     st.session_state.passport_to_unified = {}
     st.session_state.unified_to_passport = {}
+
 def get_unique_result(passport_no, unified_str):
     if not unified_str or unified_str == "Not Found":
         return unified_str
@@ -108,6 +120,7 @@ def get_unique_result(passport_no, unified_str):
     st.session_state.passport_to_unified[passport_no] = unified_str
     st.session_state.unified_to_passport[unified_str] = passport_no
     return unified_str
+
 def color_status(val):
     if val == 'Found':
         color = '#90EE90' # Light Green
@@ -116,12 +129,15 @@ def color_status(val):
     else:
         color = '' # No color for other values (including ERROR)
     return f'background-color: {color}'
+
 async def solve_captcha(page):
     """Solve reCAPTCHA or Cloudflare Turnstile using 2Captcha"""
     if not TWO_CAPTCHA_AVAILABLE:
         return False
+
     solver = TwoCaptcha(CAPTCHA_API_KEY)
     solved = False
+
     try:
         # --- 1. Check for reCAPTCHA ---
         if await page.locator("div.g-recaptcha").is_visible(timeout=5000):
@@ -135,6 +151,7 @@ async def solve_captcha(page):
             solved = True
     except Exception as e:
         logging.warning(f"⚠️ reCAPTCHA solve failed: {e}")
+
     try:
         # --- 2. Check for Cloudflare Turnstile ---
         if await page.locator('iframe[src*="turnstile"]').is_visible(timeout=5000):
@@ -155,7 +172,9 @@ async def solve_captcha(page):
                 solved = True
     except Exception as e:
         logging.warning(f"⚠️ Cloudflare Turnstile solve failed: {e}")
+
     return solved
+
 async def search_single_passport_playwright(passport_no, nationality, target_url, context):
     """
     دالة للبحث عن جواز واحد باستخدام Playwright.
@@ -207,6 +226,7 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
         logging.error(f"Critical error for {passport_no}: {e}")
         await page.close()
         return "ERROR"
+
 async def search_batch_concurrent(df, url, concurrency_level=5, update_callback=None):
     """
     دالة لتشغيل عمليات البحث بشكل متزامن.
@@ -216,6 +236,7 @@ async def search_batch_concurrent(df, url, concurrency_level=5, update_callback=
         context = await browser.new_context(viewport={'width': 1366, 'height': 768},
                                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         semaphore = asyncio.Semaphore(concurrency_level)
+
         # Initialize results list with placeholders
         results = [
             {
@@ -247,10 +268,12 @@ async def search_batch_concurrent(df, url, concurrency_level=5, update_callback=
                     await update_callback(completed_count, len(df), results, found_count)
                
                 return results[index]
+
         tasks = [run_single_search(i, row) for i, (_, row) in enumerate(df.iterrows())]
         await asyncio.gather(*tasks, return_exceptions=True)
         await browser.close()
         return results
+
 async def run_single_search_from_ui(p_in, n_in, url):
     """
     دالة لتشغيل بحث فردي من واجهة المستخدم.
@@ -262,6 +285,7 @@ async def run_single_search_from_ui(p_in, n_in, url):
         res = await search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url, context)
         await browser.close()
         return res
+
 async def run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area):
     """
     دالة لتشغيل البحث الجماعي مع تحديثات واجهة المستخدم في الوقت الفعلي.
@@ -276,34 +300,39 @@ async def run_batch_search_with_updates(df, url, concurrency_level, progress_bar
         # Update status text
         status_text.info(f"Processing {completed}/{total} entries...")
        
-        # Update time elapsed and stats
+        # Update time elapsed and stats (with detailed statistics)
         elapsed = time.time() - start_time
         time_str = format_time(elapsed)
-        stats_area.markdown(f"**Completed:** {completed}/{total} | **Found:** {found_count} | **Time Elapsed:** {time_str}")
+        stats_area.markdown(f"**Total:** {total} | **Completed:** {completed} | **Found:** {found_count} | **Time:** {time_str}")
        
         # Update live table
         current_df = pd.DataFrame(results)
         styled_df = current_df.style.applymap(color_status, subset=['Status'])
         live_table_area.dataframe(styled_df, use_container_width=True, height=400)
+
     results = await search_batch_concurrent(df, url, concurrency_level, update_ui)
     return results, time.time() - start_time
+
 # --- UI Tabs ---
 tab1, tab2 = st.tabs(["Single Search", "Upload Excel File"])
+
 with tab1:
     st.subheader("🔍 Single Person Search")
     c1, c2 = st.columns(2)
     p_in = c1.text_input("Passport Number", key="s_p")
     n_in = c2.selectbox("Nationality (Country Name)", countries, key="s_n")
+
     if st.button("🔍 Search Now"):
         if p_in and n_in:
             with st.spinner("Searching for Unified Number..."):
-                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false "
+                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false   "
                 res = asyncio.run(run_single_search_from_ui(p_in, n_in, url))
                 st.session_state.single_res = res
                 st.session_state.single_deep_res = None
             st.rerun()
         else:
             st.error("Please enter Passport Number and Nationality.")
+
     res = st.session_state.get('single_res', None)
     if res is not None:
         st.subheader("Result:")
@@ -313,13 +342,16 @@ with tab1:
             st.markdown("<h3 style='color:red;'>Error Occurred</h3>", unsafe_allow_html=True)
         else:
             st.markdown(f"<h3 style='color:green;'>Found: {res}</h3>", unsafe_allow_html=True)
+
 with tab2:
     st.subheader("📊 Batch Processing Control")
     uploaded_file = st.file_uploader("Upload Excel (Columns: 'Passport Number', 'Nationality')", type=["xlsx"])
+
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
         st.write(f"Total records in file: {len(df)}")
         st.dataframe(df, height=150)
+
         required_cols = ['Passport Number', 'Nationality']
         if not all(col in df.columns for col in required_cols):
             st.error(f"The file must contain the following columns: {required_cols}")
@@ -327,6 +359,7 @@ with tab2:
             # Concurrency Slider
             concurrency_level = st.slider("Concurrency Level (Number of simultaneous searches)", min_value=1, max_value=10, value=st.session_state.concurrency_level)
             st.session_state.concurrency_level = concurrency_level
+
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
            
             # Create placeholders for UI updates
@@ -352,23 +385,27 @@ with tab2:
                 live_table_area.dataframe(styled_initial_df, use_container_width=True, height=400)
                
                 with st.spinner("Running batch search... This may take a few minutes."):
-                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false "
+                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false   "
                     results, total_time = asyncio.run(run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area))
                     st.session_state.batch_results = results
-                # Show completion message with total time
+
+                # Show completion message with total time and statistics
                 time_str = format_time(total_time)
                 found_count = sum(1 for r in results if r and r.get('Status') == 'Found')
                 st.success(f"Batch search completed in {time_str}! Found {found_count} out of {len(df)} entries.")
                 st.rerun()
+
             if col_ctrl2.button("⏸️ Pause"):
                 st.session_state.run_state = 'paused'
                 st.rerun()
+
             if col_ctrl3.button("⏹️ Stop & Reset"):
                 st.session_state.run_state = 'stopped'
                 st.session_state.batch_results = []
                 st.session_state.start_time_ref = None
                 st.session_state.deep_processed = 0
                 st.rerun()
+
             if st.session_state.batch_results and any(st.session_state.batch_results):
                 st.subheader("Batch Results")
                 # Filter out None values if any
@@ -377,6 +414,7 @@ with tab2:
                     current_df = pd.DataFrame(filtered_results)
                     styled_df = current_df.style.applymap(color_status, subset=['Status'])
                     st.dataframe(styled_df, use_container_width=True, height=400)
+
                     # Calculate found count
                     found_count = sum(1 for r in filtered_results if r.get('Status') == 'Found')
                    
