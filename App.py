@@ -7,7 +7,7 @@ import sys
 import asyncio
 import logging
 
-# --- إعدادات النظام لضمان التوافق ---
+# --- إعدادات النظام لضمان التوافق مع Streamlit Cloud ---
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -40,7 +40,7 @@ countries = [
 st.set_page_config(page_title="ICP Passport Lookup", layout="wide")
 st.title("🔍 ICP Passport Unified Number Lookup")
 
-# --- Session State Management ---
+# --- إدارة حالة الجلسة (Session State) ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'run_state' not in st.session_state:
@@ -56,7 +56,7 @@ if 'accumulated_time' not in st.session_state:
 if 'single_res' not in st.session_state:
     st.session_state.single_res = None
 
-# --- Login Logic ---
+# --- تسجيل الدخول ---
 if not st.session_state.authenticated:
     with st.form("login_form"):
         pwd_input = st.text_input("Enter Password", type="password")
@@ -68,7 +68,7 @@ if not st.session_state.authenticated:
                 st.error("Incorrect Password.")
     st.stop()
 
-# --- Helper Functions ---
+# --- وظائف مساعدة ---
 def format_time(seconds):
     seconds = int(seconds)
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
@@ -78,33 +78,38 @@ def color_status(val):
     if val == 'Not Found': return 'background-color: #FFCCCB'
     return 'background-color: #FFA500'
 
-# --- Core Search Engine (The version that worked for you) ---
+# --- محرك البحث المستقر (الإعدادات الأصلية) ---
 async def search_single_passport_playwright(passport_no, nationality, target_url):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             page = await context.new_page()
-            page.set_default_timeout(20000)
-
+            
+            # إعدادات الانتظار المستقرة
+            page.set_default_timeout(30000)
             await page.goto(target_url, wait_until="networkidle", timeout=60000)
             
-            try: await page.click("button:has-text('I Got It')", timeout=2000)
+            # التعامل مع زر I Got It
+            try: await page.click("button:has-text('I Got It')", timeout=3000)
             except: pass
 
-            await page.evaluate("""() => {
-                const el = document.querySelector("input[value='4']");
-                if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-            }""")
+            # اختيار نوع البحث
+            await page.wait_for_selector("input[value='4']", state="visible")
+            await page.click("input[value='4']")
             
+            # اختيار نوع الجواز
             try:
                 await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=5000)
-                await page.keyboard.type("ORDINARY PASSPORT", delay=0)
+                await page.keyboard.type("ORDINARY PASSPORT", delay=50)
                 await page.keyboard.press("Enter")
             except: pass
             
-            await page.locator("input#passportNo").fill(passport_no)
+            # إدخال رقم الجواز
+            await page.wait_for_selector("input#passportNo", state="visible")
+            await page.fill("input#passportNo", passport_no)
             
+            # مسح الجنسية القديمة إن وجدت
             try:
                 await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=2000)
             except: pass
@@ -112,10 +117,11 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
             await page.keyboard.press("Tab")
             unified_number = "Not Found"
             
+            # البحث عن الجنسية ومراقبة الرد
             try:
-                async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
+                async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=15000) as response_info:
                     await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=5000)
-                    await page.keyboard.type(nationality, delay=0)
+                    await page.keyboard.type(nationality, delay=50)
                     await page.keyboard.press("Enter")
                     
                     response = await response_info.value
@@ -128,10 +134,9 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
             await browser.close()
             return unified_number
         except Exception as e:
-            logging.error(f"Error: {e}")
             return "ERROR"
 
-# --- Batch Processing ---
+# --- وظيفة المعالجة الدفعية ---
 async def run_batch_serial(df, url, status_area, progress_bar, table_area):
     start_time_session = time.time()
     total_records = len(df)
@@ -145,7 +150,7 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
         p_num = str(row['Passport Number']).strip()
         nat = str(row['Nationality']).strip().upper()
         
-        # Display Stats
+        # تحديث شريط الحالة والإحصائيات
         current_elapsed = st.session_state.accumulated_time + (time.time() - start_time_session)
         success_rate = (st.session_state.found_counter / (i + 1)) * 100 if (i+1) > 0 else 0
         
@@ -155,16 +160,22 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
         res = await search_single_passport_playwright(p_num, nat, url)
         status_val = "Found" if res not in ["Not Found", "ERROR"] else res
         
+        # حفظ النتيجة
         st.session_state.batch_results.append({
-            "Passport Number": p_num, "Nationality": nat, "Unified Number": res, "Status": status_val
+            "Passport Number": p_num, 
+            "Nationality": nat, 
+            "Unified Number": res, 
+            "Status": status_val
         })
         
         if status_val == "Found": st.session_state.found_counter += 1
         st.session_state.current_index = i + 1
         progress_bar.progress((i + 1) / total_records)
 
+        # تحديث الجدول الحي داخل القائمة المنسدلة
         with table_area:
-            st.dataframe(pd.DataFrame(st.session_state.batch_results).style.applymap(color_status, subset=['Status']), use_container_width=True, height=300)
+            current_df = pd.DataFrame(st.session_state.batch_results)
+            st.dataframe(current_df.style.applymap(color_status, subset=['Status']), use_container_width=True, height=300)
         
         await asyncio.sleep(0.5)
 
@@ -172,7 +183,7 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
     if st.session_state.current_index >= total_records:
         st.session_state.run_state = 'finished'
 
-# --- UI Setup ---
+# --- واجهة المستخدم ---
 tab1, tab2 = st.tabs(["Single Search", "Batch Processing"])
 
 with tab1:
@@ -188,7 +199,10 @@ with tab1:
                 st.session_state.single_res = res
             st.rerun()
     if st.session_state.single_res:
-        st.write(f"Result: {st.session_state.single_res}")
+        if st.session_state.single_res in ["Not Found", "ERROR"]:
+            st.error(f"Result: {st.session_state.single_res}")
+        else:
+            st.success(f"Found Unified Number: {st.session_state.single_res}")
 
 with tab2:
     st.subheader("📊 Batch Processing Control")
@@ -197,43 +211,58 @@ with tab2:
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
         
-        with st.expander("📂 Preview Uploaded File", expanded=False):
+        # 1. جدول عرض الملف المرفوع (منسدل)
+        with st.expander("📂 Preview Uploaded File Data", expanded=False):
+            st.write(f"Total Records: {len(df)}")
             st.dataframe(df, use_container_width=True)
 
         st.markdown("---")
-        c1, c2, c3 = st.columns(3)
-        if c1.button("🚀 Start New Batch"):
+        
+        # 2. أزرار التحكم في صف واحد
+        col_ctrl = st.columns([1, 1, 1, 3])
+        if col_ctrl[0].button("🚀 Start New"):
             st.session_state.run_state, st.session_state.batch_results, st.session_state.current_index, st.session_state.found_counter, st.session_state.accumulated_time = 'running', [], 0, 0, 0.0
             st.rerun()
         
-        # Pause / Resume Logic
         if st.session_state.run_state == 'running':
-            if c2.button("⏸️ Pause"):
+            if col_ctrl[1].button("⏸️ Pause"):
                 st.session_state.run_state = 'paused'; st.rerun()
         elif st.session_state.run_state == 'paused':
-            if c2.button("▶️ Resume"):
+            if col_ctrl[1].button("▶️ Resume"):
                 st.session_state.run_state = 'running'; st.rerun()
 
-        if c3.button("⏹️ Reset"):
+        if col_ctrl[2].button("⏹️ Reset"):
             st.session_state.run_state = 'idle'; st.rerun()
 
+        # 3. عرض الحالة والتقدم
         st.markdown("---")
         status_area = st.empty()
         progress_bar = st.progress(st.session_state.current_index / len(df) if len(df)>0 else 0)
         
+        # 4. جدول النتائج الحي (منسدل)
         with st.expander("📋 View/Hide Live Results Table", expanded=True):
             table_area = st.empty()
             if st.session_state.batch_results:
-                table_area.dataframe(pd.DataFrame(st.session_state.batch_results).style.applymap(color_status, subset=['Status']), use_container_width=True)
+                res_df = pd.DataFrame(st.session_state.batch_results)
+                table_area.dataframe(res_df.style.applymap(color_status, subset=['Status']), use_container_width=True, height=300)
 
+        # محرك التشغيل
         if st.session_state.run_state == 'running':
             url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
             asyncio.run(run_batch_serial(df, url, status_area, progress_bar, table_area))
-            if st.session_state.run_state == 'finished': st.success("Batch Processing Completed! 🎉")
+            if st.session_state.run_state == 'finished':
+                st.success("Batch Processing Completed! 🎉")
+                st.balloons()
+        
+        elif st.session_state.run_state != 'running':
+            # عرض الحالة عند التوقف أو النهاية
+            msg = "Ready" if st.session_state.run_state == 'idle' else st.session_state.run_state.capitalize()
+            status_area.markdown(f"### Status: {msg}\n**✅ Found:** `{st.session_state.found_counter}/{len(df)}` | **⏱️ Time:** `{format_time(st.session_state.accumulated_time)}`")
 
+        # 5. زر تحميل النتائج
         if st.session_state.batch_results:
             final_df = pd.DataFrame(st.session_state.batch_results)
-            excel_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-            final_df.to_excel(excel_buffer.name, index=False)
-            with open(excel_buffer.name, "rb") as f:
-                st.download_button("📥 Download Results", data=f, file_name="ICP_Results.xlsx")
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                final_df.to_excel(tmp.name, index=False)
+                with open(tmp.name, "rb") as f:
+                    st.download_button("📥 Download Results Excel", data=f, file_name="ICP_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
