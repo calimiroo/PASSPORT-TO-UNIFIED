@@ -10,6 +10,7 @@ import logging
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+# --- استخدم playwright-core ---
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- API Key for 2Captcha (اختياري) ---
@@ -110,100 +111,107 @@ def color_status(val):
         color = '#FFA500'
     return f'background-color: {color}'
 
-async def search_single_passport_playwright(passport_no, nationality, target_url, semaphore):
-    async with semaphore:  # للتحكم في عدد الطلبات المتزامنة
-        async with async_playwright() as p:
+async def search_single_passport_playwright(passport_no, nationality, target_url):
+    async with async_playwright() as p:
+        # --- تعديل مُهم لـ Streamlit Cloud ---
+        try:
+            # محاولة أولى مع args خاصة بـ Cloud
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-setuid-sandbox",
+                    "--single-process",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=VizDisplayCompositor"
+                ]
+            )
+        except Exception as e:
+            logging.error(f"Failed to launch browser with special args: {e}")
+            # محاولة ثانية بدون args
             try:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-setuid-sandbox",
-                        "--single-process",
-                        "--disable-background-timer-throttling",
-                        "--disable-renderer-backgrounding",
-                        "--disable-features=VizDisplayCompositor"
-                    ]
-                )
-            except Exception as e:
-                logging.error(f"Failed to launch browser: {e}")
+                browser = await p.chromium.launch(headless=True)
+            except Exception as e2:
+                logging.error(f"Failed to launch browser even without args: {e2}")
+                # محاولة ثالثة: تثبيت المتصفح أولاً ثم المحاولة
                 try:
+                    import subprocess
+                    subprocess.run(["playwright", "install", "chromium"], check=True)
                     browser = await p.chromium.launch(headless=True)
-                except Exception as e2:
-                    logging.error(f"Failed to launch browser even without args: {e2}")
-                    raise e
+                except Exception as e3:
+                    logging.error(f"All attempts failed: {e3}")
+                    raise e # أعد رمي الخطأ الأصلي
 
-            context = await browser.new_context(viewport={'width': 1366, 'height': 768},
-                                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            page = await context.new_page()
-            await page.goto(target_url, wait_until="networkidle", timeout=60000)
-            try:
-                await page.click("button:has-text('I Got It')", timeout=2000)
-            except:
-                pass
-            await page.evaluate("""() => {
-                const el = document.querySelector("input[value='4']");
-                if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-            }""")
-            try:
-                await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=10000)
-                await page.keyboard.type("ORDINARY PASSPORT")
+        context = await browser.new_context(viewport={'width': 1366, 'height': 768},
+                                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        page = await context.new_page()
+        await page.goto(target_url, wait_until="networkidle", timeout=60000)
+        try:
+            await page.click("button:has-text('I Got It')", timeout=2000)
+        except:
+            pass
+        await page.evaluate("""() => {
+            const el = document.querySelector("input[value='4']");
+            if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
+        }""")
+        try:
+            await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=10000)
+            await page.keyboard.type("ORDINARY PASSPORT")
+            await page.keyboard.press("Enter")
+        except:
+            pass
+        await page.locator("input#passportNo").fill(passport_no)
+        try:
+            await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=5000)
+        except:
+            pass
+        await page.keyboard.press("Tab")
+        unified_number = "Not Found"
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
+                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=10000)
+                await page.keyboard.type(nationality, delay=50)
                 await page.keyboard.press("Enter")
-            except:
-                pass
-            await page.locator("input#passportNo").fill(passport_no)
-            try:
-                await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=5000)
-            except:
-                pass
-            await page.keyboard.press("Tab")
-            unified_number = "Not Found"
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-                async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
-                    await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=10000)
-                    await page.keyboard.type(nationality, delay=50)
-                    await page.keyboard.press("Enter")
-                    response = await response_info.value
-                    if response.status == 200:
-                        json_data = await response.json()
-                        raw_unified = json_data.get("unifiedNumber")
-                        if raw_unified:
-                            unified_number = str(raw_unified).strip()
-            except Exception as e:
-                logging.warning(f"Search error for {passport_no}: {e}")
-            final_result = get_unique_result(passport_no, unified_number)
-            await browser.close()
-            return final_result
+                response = await response_info.value
+                if response.status == 200:
+                    json_data = await response.json()
+                    raw_unified = json_data.get("unifiedNumber")
+                    if raw_unified:
+                        unified_number = str(raw_unified).strip()
+        except Exception as e:
+            logging.warning(f"Search error for {passport_no}: {e}")
+        final_result = get_unique_result(passport_no, unified_number)
+        await browser.close()
+        return final_result
 
-# Batch Concurrent (لسرعة قصوى)
-async def run_batch_concurrent(df, url, concurrency_level=5):
+# Batch Serial with delay (لـ Streamlit Cloud)
+async def run_batch_serial(df, url):
     reset_duplicate_trackers()
-    semaphore = asyncio.Semaphore(concurrency_level)  # عدد الطلبات المتزامنة
-    tasks = []
+    results = []
     for index, row in df.iterrows():
+        if st.session_state.run_state == 'stopped':
+            break
         p_num = str(row['Passport Number']).strip()
         nat = str(row['Nationality']).strip().upper()
-        task = search_single_passport_playwright(p_num, nat, url, semaphore)
-        tasks.append(task)
-
-    results = await asyncio.gather(*tasks)
-    # إنشاء القائمة النهائية
-    final_results = []
-    for i, row in df.iterrows():
-        p_num = str(row['Passport Number']).strip()
-        nat = str(row['Nationality']).strip().upper()
-        res = results[i]
+        status_text.info(f"Processing {index + 1}/{len(df)}: {p_num}")
+        res = await search_single_passport_playwright(p_num, nat, url)
         status_val = "Found" if res not in ["Not Found", "ERROR"] else res if res == "ERROR" else "Not Found"
-        final_results.append({
+        results.append({
             "Passport Number": p_num,
             "Nationality": nat,
             "Unified Number": res,
             "Status": status_val
         })
-    return final_results
+        current_df = pd.DataFrame(results)
+        styled_df = current_df.style.map(color_status, subset=['Status'])
+        live_table_area.dataframe(styled_df, height=400)
+        progress_bar.progress((index + 1) / len(df))
+        await asyncio.sleep(10)  # delay 10 ثواني عشان ما يcrash أو يبلوك
+    return results
 
 # UI
 tab1, tab2 = st.tabs(["Single Search", "Upload Excel File"])
@@ -217,8 +225,7 @@ with tab1:
         if p_in and n_in:
             with st.spinner("Searching..."):
                 url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
-                semaphore = asyncio.Semaphore(1)  # 1 فقط للبحث الفردي
-                res = await search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url, semaphore)
+                res = asyncio.run(search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url))
                 st.session_state.single_res = res
             st.rerun()
     if st.session_state.single_res:
@@ -239,13 +246,15 @@ with tab2:
         if not all(col in df.columns for col in ['Passport Number', 'Nationality']):
             st.error("Missing columns")
         else:
-            concurrency_level = st.slider("Concurrency Level", min_value=1, max_value=10, value=3)  # تتحكم في عدد الطلبات المتزامنة
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            live_table_area = st.empty()
             col1, col2 = st.columns(2)
             if col1.button("Start Batch"):
                 st.session_state.run_state = 'running'
-                with st.spinner(f"Running batch ({concurrency_level} concurrent requests)..."):
+                with st.spinner("Running batch (serial with delay for stability)..."):
                     url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
-                    results = asyncio.run(run_batch_concurrent(df, url, concurrency_level))
+                    results = asyncio.run(run_batch_serial(df, url))
                     st.session_state.batch_results = results
                 st.success("Batch completed!")
                 st.rerun()
@@ -255,7 +264,7 @@ with tab2:
             if st.session_state.batch_results:
                 current_df = pd.DataFrame(st.session_state.batch_results)
                 styled_df = current_df.style.map(color_status, subset=['Status'])
-                st.dataframe(styled_df, height=400)
+                live_table_area.dataframe(styled_df, height=400)
                 excel_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
                 with pd.ExcelWriter(excel_buffer.name, engine='openpyxl') as writer:
                     current_df.to_excel(writer, index=False)
