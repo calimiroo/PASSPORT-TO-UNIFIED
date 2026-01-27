@@ -18,7 +18,7 @@ CAPTCHA_API_KEY = "5d4de2d9ba962a796040bd90b2cac6da"
 try:
     from twocaptcha import TwoCaptcha
     TWO_CAPTCHA_AVAILABLE = True
-except ImportError произ:
+except ImportError:  # <--- مصلح
     TWO_CAPTCHA_AVAILABLE = False
 
 # --- قائمة الدول ---
@@ -238,3 +238,4 @@ with tab2:
                     current_df.to_excel(writer, index=False)
                 with open(excel_buffer.name, "rb") as f:
                     st.download_button("Download Results", data=f, file_name="ICP_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
