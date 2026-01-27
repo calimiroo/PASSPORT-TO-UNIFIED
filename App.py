@@ -11,12 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-try:
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-    logging.warning("playwright not installed.")
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- API Key for 2Captcha ---
 CAPTCHA_API_KEY = "5d4de2d9ba962a796040bd90b2cac6da"
@@ -135,226 +130,188 @@ def color_status(val):
         color = '' # No color for other values (including ERROR)
     return f'background-color: {color}'
 
-def check_playwright_installation():
-    """Check if Playwright is properly installed and browsers are downloaded"""
+async def solve_captcha(page):
+    """Solve reCAPTCHA or Cloudflare Turnstile using 2Captcha"""
+    if not TWO_CAPTCHA_AVAILABLE:
+        return False
+
+    solver = TwoCaptcha(CAPTCHA_API_KEY)
+    solved = False
+
     try:
-        import subprocess
-        result = subprocess.run(['playwright', 'install-deps'], capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return False, "Playwright dependencies not properly installed"
-        # Check if browser is installed
-        result2 = subprocess.run(['playwright', 'install', 'chromium'], capture_output=True, text=True, timeout=60)
-        return True, "OK"
-    except subprocess.TimeoutExpired:
-        return False, "Playwright installation timed out"
-    except FileNotFoundError:
-        return False, "Playwright CLI not found - please install playwright"
+        # --- 1. Check for reCAPTCHA ---
+        if await page.locator("div.g-recaptcha").is_visible(timeout=5000):
+            sitekey = await page.locator("div.g-recaptcha").get_attribute("data-sitekey", timeout=5000)
+            result = solver.recaptcha(sitekey=sitekey, url=page.url)
+            code = result['code']
+            await page.evaluate(f'''() => {{
+                document.getElementById("g-recaptcha-response").value = "{code}";
+            }}''')
+            logging.info("✅ reCAPTCHA solved successfully")
+            solved = True
     except Exception as e:
-        return False, f"Error checking Playwright: {str(e)}"
+        logging.warning(f"⚠️ reCAPTCHA solve failed: {e}")
 
-if PLAYWRIGHT_AVAILABLE:
-    async def solve_captcha(page):
-        """Solve reCAPTCHA or Cloudflare Turnstile using 2Captcha"""
-        if not TWO_CAPTCHA_AVAILABLE:
-            return False
-
-        solver = TwoCaptcha(CAPTCHA_API_KEY)
-        solved = False
-
-        try:
-            # --- 1. Check for reCAPTCHA ---
-            if await page.locator("div.g-recaptcha").is_visible(timeout=5000):
-                sitekey = await page.locator("div.g-recaptcha").get_attribute("data-sitekey", timeout=5000)
-                result = solver.recaptcha(sitekey=sitekey, url=page.url)
+    try:
+        # --- 2. Check for Cloudflare Turnstile ---
+        if await page.locator('iframe[src*="turnstile"]').is_visible(timeout=5000):
+            iframe = page.frame_locator('iframe[src*="turnstile"]')
+            widget = iframe.locator('textarea[hidden]')
+            if await widget.count() > 0:
+                # Get the sitekey from the textarea
+                sitekey = await widget.first.get_attribute('data-sitekey', timeout=5000)
+                # Solve Turnstile
+                result = solver.turnstile(sitekey=sitekey, url=page.url)
                 code = result['code']
+                # Inject the solution
                 await page.evaluate(f'''() => {{
-                    document.getElementById("g-recaptcha-response").value = "{code}";
+                    const textarea = document.querySelector('textarea[data-post-hook]');
+                    if (textarea) {{ textarea.value = "{code}"; }}
                 }}''')
-                logging.info("✅ reCAPTCHA solved successfully")
+                logging.info("✅ Cloudflare Turnstile solved successfully")
                 solved = True
-        except Exception as e:
-            logging.warning(f"⚠️ reCAPTCHA solve failed: {e}")
+    except Exception as e:
+        logging.warning(f"⚠️ Cloudflare Turnstile solve failed: {e}")
 
+    return solved
+
+async def search_single_passport_playwright(passport_no, nationality, target_url, context):
+    """
+    دالة للبحث عن جواز واحد باستخدام Playwright.
+    تأخذ `context` كمعلمة لاستخدامه مسبقًا.
+    """
+    page = await context.new_page()
+    try:
+        await page.goto(target_url, wait_until="networkidle", timeout=60000)
+        await solve_captcha(page)
         try:
-            # --- 2. Check for Cloudflare Turnstile ---
-            if await page.locator('iframe[src*="turnstile"]').is_visible(timeout=5000):
-                iframe = page.frame_locator('iframe[src*="turnstile"]')
-                widget = iframe.locator('textarea[hidden]')
-                if await widget.count() > 0:
-                    # Get the sitekey from the textarea
-                    sitekey = await widget.first.get_attribute('data-sitekey', timeout=5000)
-                    # Solve Turnstile
-                    result = solver.turnstile(sitekey=sitekey, url=page.url)
-                    code = result['code']
-                    # Inject the solution
-                    await page.evaluate(f'''() => {{
-                        const textarea = document.querySelector('textarea[data-post-hook]');
-                        if (textarea) {{ textarea.value = "{code}"; }}
-                    }}''')
-                    logging.info("✅ Cloudflare Turnstile solved successfully")
-                    solved = True
-        except Exception as e:
-            logging.warning(f"⚠️ Cloudflare Turnstile solve failed: {e}")
-
-        return solved
-
-    async def search_single_passport_playwright(passport_no, nationality, target_url, context):
-        """
-        دالة للبحث عن جواز واحد باستخدام Playwright.
-        تأخذ `context` كمعلمة لاستخدامه مسبقًا.
-        """
-        page = await context.new_page()
+            await page.click("button:has-text('I Got It')", timeout=2000)
+        except:
+            pass
+        await page.evaluate("""() => {
+            const el = document.querySelector("input[value='4']");
+            if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
+        }""")
         try:
-            await page.goto(target_url, wait_until="networkidle", timeout=60000)
-            await solve_captcha(page)
-            try:
-                await page.click("button:has-text('I Got It')", timeout=2000)
-            except:
-                pass
-            await page.evaluate("""() => {
-                const el = document.querySelector("input[value='4']");
-                if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-            }""")
-            try:
-                await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=10000)
-                await page.keyboard.type("ORDINARY PASSPORT")
+            await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=10000)
+            await page.keyboard.type("ORDINARY PASSPORT")
+            await page.keyboard.press("Enter")
+        except:
+            pass
+        await page.locator("input#passportNo").fill(passport_no)
+        try:
+            await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=5000)
+        except:
+            pass
+        await page.keyboard.press("Tab")
+        unified_number = "Not Found"
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
+                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=10000)
+                await page.keyboard.type(nationality, delay=50)
                 await page.keyboard.press("Enter")
-            except:
-                pass
-            await page.locator("input#passportNo").fill(passport_no)
-            try:
-                await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=5000)
-            except:
-                pass
-            await page.keyboard.press("Tab")
-            unified_number = "Not Found"
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-                async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
-                    await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=10000)
-                    await page.keyboard.type(nationality, delay=50)
-                    await page.keyboard.press("Enter")
-                    response = await response_info.value
-                    if response.status == 200:
-                        json_data = await response.json()
-                        raw_unified = json_data.get("unifiedNumber")
-                        if raw_unified:
-                            unified_number = str(raw_unified).strip()
-            except Exception as e:
-                logging.warning(f"Basic search error for {passport_no}: {e}")
-            final_result = get_unique_result(passport_no, unified_number)
-            await page.close() # Close page only, keep context alive
-            return final_result
+                response = await response_info.value
+                if response.status == 200:
+                    json_data = await response.json()
+                    raw_unified = json_data.get("unifiedNumber")
+                    if raw_unified:
+                        unified_number = str(raw_unified).strip()
         except Exception as e:
-            logging.error(f"Critical error for {passport_no}: {e}")
-            await page.close()
-            return "ERROR"
+            logging.warning(f"Basic search error for {passport_no}: {e}")
+        final_result = get_unique_result(passport_no, unified_number)
+        await page.close() # Close page only, keep context alive
+        return final_result
+    except Exception as e:
+        logging.error(f"Critical error for {passport_no}: {e}")
+        await page.close()
+        return "ERROR"
 
-    async def search_batch_concurrent(df, url, concurrency_level=5, update_callback=None):
-        """
-        دالة لتشغيل عمليات البحث بشكل متزامن.
-        """
-        async with async_playwright() as p:
-            try:
-                browser = await p.chromium.launch(headless=True)
-            except Exception as e:
-                logging.error(f"Failed to launch browser: {e}")
-                # Try launching with different options
-                try:
-                    browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-                except Exception as e2:
-                    logging.error(f"Failed to launch browser even with args: {e2}")
-                    raise e  # Re-raise original error
-            
-            context = await browser.new_context(viewport={'width': 1366, 'height': 768},
-                                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            semaphore = asyncio.Semaphore(concurrency_level)
+async def search_batch_concurrent(df, url, concurrency_level=5, update_callback=None):
+    """
+    دالة لتشغيل عمليات البحث بشكل متزامن.
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(viewport={'width': 1366, 'height': 768},
+                                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        semaphore = asyncio.Semaphore(concurrency_level)
 
-            # Initialize results list with placeholders
-            results = [
-                {
-                    "Passport Number": str(row['Passport Number']).strip(),
-                    "Nationality": str(row['Nationality']).strip().upper(),
-                    "Unified Number": "",
-                    "Status": ""
-                } for _, row in df.iterrows()
-            ]
-            completed_count = 0
-            found_count = 0
-           
-            async def run_single_search(index, row):
-                nonlocal completed_count, found_count
-                async with semaphore:
-                    p_num = results[index]["Passport Number"]
-                    nat = results[index]["Nationality"]
-                    res = await search_single_passport_playwright(p_num, nat, url, context)
-                    status_val = "Found" if res not in ["Not Found", "ERROR"] else res if res == "ERROR" else "Not Found"
-                   
-                    results[index]["Unified Number"] = res
-                    results[index]["Status"] = status_val
-                   
-                    completed_count += 1
-                    if status_val == "Found":
-                        found_count += 1
-                   
-                    if update_callback:
-                        await update_callback(completed_count, len(df), results, found_count)
-                   
-                    return results[index]
-
-            tasks = [run_single_search(i, row) for i, (_, row) in enumerate(df.iterrows())]
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await browser.close()
-            return results
-
-    async def run_single_search_from_ui(p_in, n_in, url):
-        """
-        دالة لتشغيل بحث فردي من واجهة المستخدم.
-        """
-        async with async_playwright() as p:
-            try:
-                browser = await p.chromium.launch(headless=True)
-            except Exception as e:
-                logging.error(f"Failed to launch browser: {e}")
-                # Try launching with different options
-                try:
-                    browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-                except Exception as e2:
-                    logging.error(f"Failed to launch browser even with args: {e2}")
-                    raise e  # Re-raise original error
-            
-            context = await browser.new_context(viewport={'width': 1366, 'height': 768},
-                                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            res = await search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url, context)
-            await browser.close()
-            return res
-
-    async def run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area):
-        """
-        دالة لتشغيل البحث الجماعي مع تحديثات واجهة المستخدم في الوقت الفعلي.
-        """
-        reset_duplicate_trackers()
-        start_time = time.time()
+        # Initialize results list with placeholders
+        results = [
+            {
+                "Passport Number": str(row['Passport Number']).strip(),
+                "Nationality": str(row['Nationality']).strip().upper(),
+                "Unified Number": "",
+                "Status": ""
+            } for _, row in df.iterrows()
+        ]
+        completed_count = 0
+        found_count = 0
        
-        async def update_ui(completed, total, results, found_count):
-            # Update progress bar
-            progress_bar.progress(completed / total)
-           
-            # Update status text
-            status_text.info(f"Processing {completed}/{total} entries...")
-           
-            # Update time elapsed and stats (with detailed statistics)
-            elapsed = time.time() - start_time
-            time_str = format_time(elapsed)
-            stats_area.markdown(f"**Total:** {total} | **Completed:** {completed} | **Found:** {found_count} | **Time:** {time_str}")
-           
-            # Update live table
-            current_df = pd.DataFrame(results)
-            styled_df = current_df.style.applymap(color_status, subset=['Status'])
-            live_table_area.dataframe(styled_df, use_container_width=True, height=400)
+        async def run_single_search(index, row):
+            nonlocal completed_count, found_count
+            async with semaphore:
+                p_num = results[index]["Passport Number"]
+                nat = results[index]["Nationality"]
+                res = await search_single_passport_playwright(p_num, nat, url, context)
+                status_val = "Found" if res not in ["Not Found", "ERROR"] else res if res == "ERROR" else "Not Found"
+               
+                results[index]["Unified Number"] = res
+                results[index]["Status"] = status_val
+               
+                completed_count += 1
+                if status_val == "Found":
+                    found_count += 1
+               
+                if update_callback:
+                    await update_callback(completed_count, len(df), results, found_count)
+               
+                return results[index]
 
-        results = await search_batch_concurrent(df, url, concurrency_level, update_ui)
-        return results, time.time() - start_time
+        tasks = [run_single_search(i, row) for i, (_, row) in enumerate(df.iterrows())]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await browser.close()
+        return results
+
+async def run_single_search_from_ui(p_in, n_in, url):
+    """
+    دالة لتشغيل بحث فردي من واجهة المستخدم.
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(viewport={'width': 1366, 'height': 768},
+                                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        res = await search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url, context)
+        await browser.close()
+        return res
+
+async def run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area):
+    """
+    دالة لتشغيل البحث الجماعي مع تحديثات واجهة المستخدم في الوقت الفعلي.
+    """
+    reset_duplicate_trackers()
+    start_time = time.time()
+   
+    async def update_ui(completed, total, results, found_count):
+        # Update progress bar
+        progress_bar.progress(completed / total)
+       
+        # Update status text
+        status_text.info(f"Processing {completed}/{total} entries...")
+       
+        # Update time elapsed and stats (with detailed statistics)
+        elapsed = time.time() - start_time
+        time_str = format_time(elapsed)
+        stats_area.markdown(f"**Total:** {total} | **Completed:** {completed} | **Found:** {found_count} | **Time:** {time_str}")
+       
+        # Update live table
+        current_df = pd.DataFrame(results)
+        styled_df = current_df.style.applymap(color_status, subset=['Status'])
+        live_table_area.dataframe(styled_df, use_container_width=True, height=400)
+
+    results = await search_batch_concurrent(df, url, concurrency_level, update_ui)
+    return results, time.time() - start_time
 
 # --- UI Tabs ---
 tab1, tab2 = st.tabs(["Single Search", "Upload Excel File"])
@@ -366,27 +323,12 @@ with tab1:
     n_in = c2.selectbox("Nationality (Country Name)", countries, key="s_n")
 
     if st.button("🔍 Search Now"):
-        if not PLAYWRIGHT_AVAILABLE:
-            st.error("❌ Playwright is not available. Please install it using: `pip install playwright`")
-            st.stop()
-        
-        is_installed, message = check_playwright_installation()
-        if not is_installed:
-            st.error(f"❌ Playwright is not properly installed: {message}")
-            st.info("Please run: `playwright install chromium` in your terminal")
-            st.stop()
-        
         if p_in and n_in:
             with st.spinner("Searching for Unified Number..."):
                 url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false   "
-                try:
-                    res = asyncio.run(run_single_search_from_ui(p_in, n_in, url))
-                    st.session_state.single_res = res
-                    st.session_state.single_deep_res = None
-                except Exception as e:
-                    st.error(f"Error during search: {str(e)}")
-                    st.session_state.single_res = "ERROR"
-                    st.session_state.single_deep_res = None
+                res = asyncio.run(run_single_search_from_ui(p_in, n_in, url))
+                st.session_state.single_res = res
+                st.session_state.single_deep_res = None
             st.rerun()
         else:
             st.error("Please enter Passport Number and Nationality.")
@@ -406,16 +348,6 @@ with tab2:
     uploaded_file = st.file_uploader("Upload Excel (Columns: 'Passport Number', 'Nationality')", type=["xlsx"])
 
     if uploaded_file:
-        if not PLAYWRIGHT_AVAILABLE:
-            st.error("❌ Playwright is not available. Please install it using: `pip install playwright`")
-            st.stop()
-        
-        is_installed, message = check_playwright_installation()
-        if not is_installed:
-            st.error(f"❌ Playwright is not properly installed: {message}")
-            st.info("Please run: `playwright install chromium` in your terminal")
-            st.stop()
-        
         df = pd.read_excel(uploaded_file)
         st.write(f"Total records in file: {len(df)}")
         st.dataframe(df, height=150)
@@ -454,27 +386,13 @@ with tab2:
                
                 with st.spinner("Running batch search... This may take a few minutes."):
                     url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false   "
-                    try:
-                        results, total_time = asyncio.run(run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area))
-                        st.session_state.batch_results = results
-                    except Exception as e:
-                        st.error(f"Error during batch search: {str(e)}")
-                        st.stop()
+                    results, total_time = asyncio.run(run_batch_search_with_updates(df, url, concurrency_level, progress_bar, status_text, stats_area, live_table_area))
+                    st.session_state.batch_results = results
 
                 # Show completion message with total time and statistics
                 time_str = format_time(total_time)
                 found_count = sum(1 for r in results if r and r.get('Status') == 'Found')
-                
-                # Display final statistics after search completion
                 st.success(f"Batch search completed in {time_str}! Found {found_count} out of {len(df)} entries.")
-                
-                # Show detailed statistics
-                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-                col_stat1.metric("Total Entries", len(df))
-                col_stat2.metric("Completed", len(df))
-                col_stat3.metric("Found", found_count)
-                col_stat4.metric("Time Taken", time_str)
-                
                 st.rerun()
 
             if col_ctrl2.button("⏸️ Pause"):
@@ -511,14 +429,3 @@ with tab2:
                             file_name="ICP_Batch_Results.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-
-# Add installation instructions
-st.sidebar.markdown(
-    "### 🚨 Important!\n\n"
-    "If you see browser errors like:\n"
-    "`Executable doesn't exist at ...`\n\n"
-    "Run in your terminal:\n\n"
-    "```bash\nplaywright install chromium\n```\n\n"
-    "Or:\n\n"
-    "```bash\nplaywright install\n```"
-)
