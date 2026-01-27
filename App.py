@@ -210,7 +210,7 @@ async def run_batch_serial(df, url):
         styled_df = current_df.style.map(color_status, subset=['Status'])
         live_table_area.dataframe(styled_df, height=400)
         progress_bar.progress((index + 1) / len(df))
-        await asyncio.sleep(10)  # delay 10 ثواني عشان ما يcrash أو يبلوك
+        await asyncio.sleep(2)  # delay 2 ثواني عشان ما يcrash أو يبلوك
     return results
 
 # UI
@@ -270,3 +270,4 @@ with tab2:
                     current_df.to_excel(writer, index=False)
                 with open(excel_buffer.name, "rb") as f:
                     st.download_button("Download Results", data=f, file_name="ICP_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
