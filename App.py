@@ -45,7 +45,7 @@ st.title("🔍 ICP Passport Unified Number Lookup")
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# حالة التشغيل: 'idle', 'running', 'paused'
+# حالة التشغيل: 'idle', 'running', 'paused', 'finished'
 if 'run_state' not in st.session_state:
     st.session_state.run_state = 'idle' 
 
@@ -145,37 +145,58 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
                     logging.error(f"All attempts failed: {e3}")
                     raise e 
 
-        context = await browser.new_context(viewport={'width': 1366, 'height': 768},
-                                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        context = await browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         page = await context.new_page()
+        
+        # تحسين السرعة: تقليل مهلة الانتظار الافتراضية
+        page.set_default_timeout(30000)
+
         await page.goto(target_url, wait_until="networkidle", timeout=60000)
+        
+        # محاولة إغلاق زر "I Got It" بسرعة
         try:
-            await page.click("button:has-text('I Got It')", timeout=2000)
+            # تقليل مدة الانتظار للزر لأنه إما موجود أو لا
+            await page.click("button:has-text('I Got It')", timeout=1500)
         except:
             pass
+            
+        # اختيار الفئة
         await page.evaluate("""() => {
             const el = document.querySelector("input[value='4']");
             if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
         }""")
+        
         try:
-            await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=10000)
-            await page.keyboard.type("ORDINARY PASSPORT")
+            await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=5000)
+            # الكتابة بدون تأخير (delay=0) لتسريع العملية
+            await page.keyboard.type("ORDINARY PASSPORT", delay=0)
             await page.keyboard.press("Enter")
         except:
             pass
+            
         await page.locator("input#passportNo").fill(passport_no)
+        
         try:
-            await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=5000)
+            await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=2000)
         except:
             pass
+            
         await page.keyboard.press("Tab")
         unified_number = "Not Found"
+        
         try:
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
-                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=10000)
-                await page.keyboard.type(nationality, delay=50)
+            # انتظار التحميل الشبكي
+            await page.wait_for_load_state("networkidle", timeout=5000)
+            
+            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=8000) as response_info:
+                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=5000)
+                # الكتابة بسرعة قصوى
+                await page.keyboard.type(nationality, delay=0)
                 await page.keyboard.press("Enter")
+                
                 response = await response_info.value
                 if response.status == 200:
                     json_data = await response.json()
@@ -184,26 +205,22 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
                         unified_number = str(raw_unified).strip()
         except Exception as e:
             logging.warning(f"Search error for {passport_no}: {e}")
+            
         final_result = get_unique_result(passport_no, unified_number)
         await browser.close()
         return final_result
 
 # --- Batch Processing Function (Resume Capable) ---
-async def run_batch_serial(df, url, metric_placeholder, progress_bar, status_text, live_table_area):
+async def run_batch_serial(df, url, metric_placeholder, progress_bar, status_text_area, live_table_area):
     
     start_time_session = time.time()
     total_records = len(df)
     
-    # نبدأ من حيث توقفنا (current_index)
     start_idx = st.session_state.current_index
-    
-    # تحويل الـ DataFrame إلى قائمة قواميس للتعامل معها بسهولة
     records = df.to_dict('records')
 
-    # حلقة التكرار تبدأ من آخر فهرس
     for i in range(start_idx, total_records):
         
-        # التحقق من طلب التوقف المؤقت أو الإلغاء
         if st.session_state.run_state != 'running':
             break
 
@@ -211,13 +228,22 @@ async def run_batch_serial(df, url, metric_placeholder, progress_bar, status_tex
         p_num = str(row['Passport Number']).strip()
         nat = str(row['Nationality']).strip().upper()
         
-        status_text.info(f"Processing {i + 1}/{total_records}: {p_num} ({nat})")
+        # حساب الوقت والنسبة الحالية
+        current_session_elapsed = time.time() - start_time_session
+        total_elapsed = st.session_state.accumulated_time + current_session_elapsed
+        success_rate = (st.session_state.found_counter / (i + 1)) * 100 if (i+1) > 0 else 0
+        
+        # تحديث منطقة الحالة والإحصائيات معاً
+        status_text_area.markdown(f"""
+        ### 🔄 Processing {i + 1}/{total_records}: **{p_num}** ({nat})
+        ---
+        **⏱️ Time:** `{format_time(total_elapsed)}` | **✅ Found:** `{st.session_state.found_counter}/{total_records}` | **📈 Rate:** `{success_rate:.1f}%`
+        """)
         
         # تنفيذ البحث
         res = await search_single_passport_playwright(p_num, nat, url)
         status_val = "Found" if res not in ["Not Found", "ERROR"] else res if res == "ERROR" else "Not Found"
         
-        # تحديث النتائج
         result_entry = {
             "Passport Number": p_num,
             "Nationality": nat,
@@ -229,22 +255,9 @@ async def run_batch_serial(df, url, metric_placeholder, progress_bar, status_tex
         if status_val == "Found":
             st.session_state.found_counter += 1
         
-        # تحديث الفهرس الحالي
         st.session_state.current_index = i + 1
 
-        # حساب الوقت الكلي (الوقت القديم المخزن + الوقت في الجلسة الحالية)
-        current_session_elapsed = time.time() - start_time_session
-        total_elapsed = st.session_state.accumulated_time + current_session_elapsed
-        
-        # تحديث العدادات (Metrics)
-        with metric_placeholder.container():
-            k1, k2, k3 = st.columns(3)
-            k1.metric("⏱️ Time Elapsed", format_time(total_elapsed))
-            k2.metric("✅ Found / Total", f"{st.session_state.found_counter} / {total_records}")
-            success_rate = (st.session_state.found_counter / (i + 1)) * 100 if (i+1) > 0 else 0
-            k3.metric("📈 Success Rate", f"{success_rate:.1f}%")
-
-        # تحديث الجدول
+        # تحديث الجدول داخل الـ Expander
         current_df = pd.DataFrame(st.session_state.batch_results)
         try:
             styled_df = current_df.style.map(color_status, subset=['Status'])
@@ -254,15 +267,13 @@ async def run_batch_serial(df, url, metric_placeholder, progress_bar, status_tex
         
         progress_bar.progress((i + 1) / total_records)
         
-        # انتظار بسيط
-        await asyncio.sleep(2)
+        # تسريع الانتقال للحالة التالية (تقليل الانتظار من 2 ثانية إلى 0.5)
+        await asyncio.sleep(0.5)
 
-    # إذا انتهت الحلقة وكان الحالة running، فهذا يعني أننا انتهينا تماماً
     if st.session_state.current_index == total_records:
         st.session_state.run_state = 'finished'
         st.session_state.accumulated_time += (time.time() - start_time_session)
     else:
-        # إذا خرجنا بسبب Pause
         st.session_state.accumulated_time += (time.time() - start_time_session)
 
 # --- UI Layout ---
@@ -295,37 +306,16 @@ with tab2:
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
         
-        # التأكد من الأعمدة
         if not all(col in df.columns for col in ['Passport Number', 'Nationality']):
             st.error("Excel must contain columns: 'Passport Number', 'Nationality'")
         else:
-            # --- منطقة العدادات (تظهر دائماً) ---
-            st.markdown("---")
+            # --- منطقة العدادات العلوية الثابتة (ملخص) ---
             metric_placeholder = st.empty()
             
-            # عرض القيم المبدئية أو المحفوظة
-            if st.session_state.run_state == 'idle':
-                with metric_placeholder.container():
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("⏱️ Time Elapsed", "00:00:00")
-                    k2.metric("✅ Found / Total", f"0 / {len(df)}")
-                    k3.metric("📈 Success Rate", "0.0%")
-            elif st.session_state.run_state == 'paused' or st.session_state.run_state == 'finished':
-                # عرض آخر قيم محفوظة
-                with metric_placeholder.container():
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("⏱️ Time Elapsed", format_time(st.session_state.accumulated_time))
-                    k2.metric("✅ Found / Total", f"{st.session_state.found_counter} / {len(df)}")
-                    processed = st.session_state.current_index
-                    rate = (st.session_state.found_counter / processed * 100) if processed > 0 else 0
-                    k3.metric("📈 Success Rate", f"{rate:.1f}%")
-
-            st.markdown("---")
-
             # --- أزرار التحكم ---
+            st.markdown("---")
             col_btns = st.columns(4)
             
-            # 1. زر بداية جديدة
             if col_btns[0].button("🚀 Start New Batch"):
                 st.session_state.run_state = 'running'
                 st.session_state.batch_results = []
@@ -335,56 +325,72 @@ with tab2:
                 reset_duplicate_trackers()
                 st.rerun()
 
-            # 2. زر استكمال (يظهر فقط إذا كان متوقف مؤقتاً)
             if st.session_state.run_state == 'paused' and st.session_state.current_index < len(df):
                 if col_btns[1].button("▶️ Resume"):
                     st.session_state.run_state = 'running'
                     st.rerun()
 
-            # 3. زر إيقاف مؤقت (يظهر فقط إذا كان يعمل)
             if st.session_state.run_state == 'running':
                 if col_btns[1].button("⏸️ Pause"):
                     st.session_state.run_state = 'paused'
                     st.rerun()
 
-            # 4. زر إيقاف نهائي
             if col_btns[2].button("⏹️ Stop/Reset"):
                 st.session_state.run_state = 'idle'
                 st.rerun()
 
-            # --- مساحات العرض ---
+            # --- منطقة العرض الحية (Status + Progress) ---
+            st.markdown("---")
+            status_text_area = st.empty() # هنا سيظهر النص والتفاصيل
             progress_bar = st.progress(0)
-            status_text = st.empty()
-            live_table_area = st.empty()
-
-            # تحديث شريط التقدم بناءً على الحالة الحالية
+            
+            # تحديث شريط التقدم عند التحميل
             if len(df) > 0:
                 progress_bar.progress(st.session_state.current_index / len(df))
 
-            # عرض الجدول الموجود حالياً
-            if st.session_state.batch_results:
-                current_df = pd.DataFrame(st.session_state.batch_results)
-                try:
-                    styled_df = current_df.style.map(color_status, subset=['Status'])
-                except:
-                    styled_df = current_df.style.applymap(color_status, subset=['Status'])
-                live_table_area.dataframe(styled_df, height=300, use_container_width=True)
+            # --- الجدول القابل للإخفاء (Expander) ---
+            with st.expander("📋 View/Hide Live Results Table", expanded=False):
+                live_table_area = st.empty()
+                
+                # عرض الجدول إذا كان هناك نتائج
+                if st.session_state.batch_results:
+                    current_df = pd.DataFrame(st.session_state.batch_results)
+                    try:
+                        styled_df = current_df.style.map(color_status, subset=['Status'])
+                    except:
+                        styled_df = current_df.style.applymap(color_status, subset=['Status'])
+                    live_table_area.dataframe(styled_df, height=300, use_container_width=True)
+                else:
+                    live_table_area.info("No results yet.")
 
             # --- منطق التشغيل الفعلي ---
             if st.session_state.run_state == 'running':
                 url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
                 
-                # تشغيل الـ Async Loop
                 asyncio.run(run_batch_serial(
-                    df, url, metric_placeholder, progress_bar, status_text, live_table_area
+                    df, url, metric_placeholder, progress_bar, status_text_area, live_table_area
                 ))
                 
-                # بعد انتهاء الدالة (إما بسبب التوقف أو الانتهاء)
                 if st.session_state.run_state == 'finished':
                     st.success("Batch Processing Completed! 🎉")
                     st.balloons()
                 elif st.session_state.run_state == 'paused':
                     st.warning("Paused. Click 'Resume' to continue.")
+
+            # عرض الحالة عند التوقف (Pause/Idle)
+            elif st.session_state.run_state != 'running':
+                 # عرض آخر حالة معروفة
+                 total_elapsed = st.session_state.accumulated_time
+                 total_records = len(df)
+                 processed = st.session_state.current_index
+                 rate = (st.session_state.found_counter / processed * 100) if processed > 0 else 0
+                 
+                 status_msg = "Ready to start" if st.session_state.run_state == 'idle' else "Paused" if st.session_state.run_state == 'paused' else "Finished"
+                 
+                 status_text_area.markdown(f"""
+                 ### Status: {status_msg}
+                 **⏱️ Time:** `{format_time(total_elapsed)}` | **✅ Found:** `{st.session_state.found_counter}/{total_records}` | **📈 Rate:** `{rate:.1f}%`
+                 """)
 
             # --- التحميل ---
             if st.session_state.batch_results:
