@@ -10,6 +10,7 @@ import logging
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+# --- استخدم playwright-core ---
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- API Key for 2Captcha (اختياري) ---
@@ -114,6 +115,7 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
     async with async_playwright() as p:
         # --- تعديل مُهم لـ Streamlit Cloud ---
         try:
+            # محاولة أولى مع args خاصة بـ Cloud
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
@@ -121,17 +123,27 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--disable-setuid-sandbox",
-                    "--single-process",  # Add this
+                    "--single-process",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=VizDisplayCompositor"
                 ]
             )
         except Exception as e:
-            logging.error(f"Failed to launch browser: {e}")
-            # محاولة ثانية مع خيارات أقل
+            logging.error(f"Failed to launch browser with special args: {e}")
+            # محاولة ثانية بدون args
             try:
                 browser = await p.chromium.launch(headless=True)
             except Exception as e2:
-                logging.error(f"Failed to launch browser even with fallback: {e2}")
-                raise e # أعد رمي الخطأ الأصلي
+                logging.error(f"Failed to launch browser even without args: {e2}")
+                # محاولة ثالثة: تثبيت المتصفح أولاً ثم المحاولة
+                try:
+                    import subprocess
+                    subprocess.run(["playwright", "install", "chromium"], check=True)
+                    browser = await p.chromium.launch(headless=True)
+                except Exception as e3:
+                    logging.error(f"All attempts failed: {e3}")
+                    raise e # أعد رمي الخطأ الأصلي
 
         context = await browser.new_context(viewport={'width': 1366, 'height': 768},
                                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
