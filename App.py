@@ -19,7 +19,7 @@ CAPTCHA_API_KEY = "5d4de2d9ba962a796040bd90b2cac6da"
 try:
     from twocaptcha import TwoCaptcha
     TWO_CAPTCHA_AVAILABLE = True
-except ImportError:  # <--- مصلح
+except ImportError:
     TWO_CAPTCHA_AVAILABLE = False
 
 # --- قائمة الدول ---
@@ -188,30 +188,63 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
         await browser.close()
         return final_result
 
-# Batch Serial with delay (لـ Streamlit Cloud)
-async def run_batch_serial(df, url):
+# Batch Serial with delay (لـ Streamlit Cloud) - تم التعديل لإظهار الإحصائيات
+async def run_batch_serial(df, url, stats_area, progress_bar, status_text, live_table_area):
     reset_duplicate_trackers()
     results = []
+    
+    # --- متغيرات الإحصائيات ---
+    start_time = time.time()
+    found_count = 0
+    total_records = len(df)
+    
     for index, row in df.iterrows():
         if st.session_state.run_state == 'stopped':
             break
+        
         p_num = str(row['Passport Number']).strip()
         nat = str(row['Nationality']).strip().upper()
-        status_text.info(f"Processing {index + 1}/{len(df)}: {p_num}")
+        
+        status_text.info(f"Processing {index + 1}/{total_records}: {p_num}")
+        
         res = await search_single_passport_playwright(p_num, nat, url)
         status_val = "Found" if res not in ["Not Found", "ERROR"] else res if res == "ERROR" else "Not Found"
+        
+        # --- تحديث العدادات ---
+        if status_val == "Found":
+            found_count += 1
+            
+        elapsed_time = time.time() - start_time
+        found_rate = (found_count / (index + 1)) * 100
+        
+        # --- تحديث منطقة الإحصائيات الحية ---
+        stats_area.markdown(f"""
+        #### 📊 Live Statistics
+        * **⏱️ Elapsed Time:** `{format_time(elapsed_time)}`
+        * **✅ Found:** `{found_count}` / `{index + 1}` (Total: {total_records})
+        * **📈 Success Rate:** `{found_rate:.1f}%`
+        """)
+        
         results.append({
             "Passport Number": p_num,
             "Nationality": nat,
             "Unified Number": res,
             "Status": status_val
         })
+        
         current_df = pd.DataFrame(results)
-        styled_df = current_df.style.map(color_status, subset=['Status'])
-        live_table_area.dataframe(styled_df, height=400)
-        progress_bar.progress((index + 1) / len(df))
+        # استخدام applymap للتوافق مع نسخ pandas المختلفة، أو map إذا كانت النسخة حديثة جداً
+        try:
+             styled_df = current_df.style.map(color_status, subset=['Status'])
+        except:
+             styled_df = current_df.style.applymap(color_status, subset=['Status'])
+             
+        live_table_area.dataframe(styled_df, height=400, use_container_width=True)
+        progress_bar.progress((index + 1) / total_records)
+        
         await asyncio.sleep(2)  # delay 2 ثواني عشان ما يcrash أو يبلوك
-    return results
+        
+    return results, time.time() - start_time
 
 # UI
 tab1, tab2 = st.tabs(["Single Search", "Upload Excel File"])
@@ -224,7 +257,7 @@ with tab1:
     if st.button("🔍 Search Now"):
         if p_in and n_in:
             with st.spinner("Searching..."):
-                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
+                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
                 res = asyncio.run(search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url))
                 st.session_state.single_res = res
             st.rerun()
@@ -246,28 +279,41 @@ with tab2:
         if not all(col in df.columns for col in ['Passport Number', 'Nationality']):
             st.error("Missing columns")
         else:
+            # --- أماكن العناصر في الواجهة ---
+            stats_area = st.empty()  # مكان ظهور العدادات والوقت
             progress_bar = st.progress(0)
             status_text = st.empty()
             live_table_area = st.empty()
+            
             col1, col2 = st.columns(2)
             if col1.button("Start Batch"):
                 st.session_state.run_state = 'running'
                 with st.spinner("Running batch (serial with delay for stability)..."):
-                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
-                    results = asyncio.run(run_batch_serial(df, url))
+                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
+                    # تمرير عناصر الواجهة للدالة لتحديثها
+                    results, total_time = asyncio.run(run_batch_serial(df, url, stats_area, progress_bar, status_text, live_table_area))
                     st.session_state.batch_results = results
-                st.success("Batch completed!")
+                
+                # رسالة الختام
+                found_final = sum(1 for r in results if r['Status'] == 'Found')
+                st.success(f"Batch completed in {format_time(total_time)}! Found {found_final}/{len(df)}")
                 st.rerun()
+            
             if col2.button("Stop"):
                 st.session_state.run_state = 'stopped'
                 st.rerun()
+            
             if st.session_state.batch_results:
                 current_df = pd.DataFrame(st.session_state.batch_results)
-                styled_df = current_df.style.map(color_status, subset=['Status'])
-                live_table_area.dataframe(styled_df, height=400)
+                try:
+                    styled_df = current_df.style.map(color_status, subset=['Status'])
+                except:
+                    styled_df = current_df.style.applymap(color_status, subset=['Status'])
+                
+                live_table_area.dataframe(styled_df, height=400, use_container_width=True)
+                
                 excel_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
                 with pd.ExcelWriter(excel_buffer.name, engine='openpyxl') as writer:
                     current_df.to_excel(writer, index=False)
                 with open(excel_buffer.name, "rb") as f:
                     st.download_button("Download Results", data=f, file_name="ICP_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
