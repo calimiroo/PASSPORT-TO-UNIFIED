@@ -1,7 +1,7 @@
-# استخدم صورة كاملة مش slim عشان الdeps
+# استخدم python:3.11 كامل مش slim عشان الdeps موجودة
 FROM python:3.11
 
-# تثبيت system dependencies كاملة لـ Chromium/Playwright
+# تثبيت system dependencies كاملة لـ Chromium/Playwright (ده اللي كان ناقص)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     fonts-liberation \
@@ -43,18 +43,16 @@ RUN apt-get update && apt-get install -y \
 # Work directory
 WORKDIR /app
 
-# Copy requirements
+# Copy and install requirements
 COPY requirements.txt .
-
-# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers with deps
-RUN playwright install --with-deps chromium
+# Install Playwright browsers (بدون --with-deps عشان الdeps مثبتة يدوي)
+RUN playwright install chromium
 
 # Copy code
 COPY . .
 
-# Run Streamlit
+# Expose port and run
 EXPOSE 8080
 CMD ["streamlit", "run", "app.py", "--server.port", "$PORT", "--server.headless", "true"]
