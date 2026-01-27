@@ -78,21 +78,22 @@ def color_status(val):
     if val == 'Not Found': return 'background-color: #FFCCCB'
     return 'background-color: #FFA500'
 
-# --- المحرك الأصلي المستقر (خطة استخراج النتيجة المعتمدة) ---
+# --- المحرك المستقر (الالتزام الكامل بخطة الاستخراج) ---
 async def search_single_passport_playwright(passport_no, nationality, target_url):
     async with async_playwright() as p:
+        # ملاحظة: تم ترك الإعدادات الافتراضية لضمان عمل الجافا سكربت في الموقع
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
         try:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             page = await context.new_page()
             
-            # الانتظار حتى استقرار الموقع
+            # الانتظار الكامل لضمان استقرار الموقع (networkidle)
             await page.goto(target_url, wait_until="networkidle", timeout=60000)
             
-            try: await page.click("button:has-text('I Got It')", timeout=2000)
+            try: await page.click("button:has-text('I Got It')", timeout=3000)
             except: pass
 
-            # اختيار الفئة 4
+            # اختيار الفئة
             await page.wait_for_selector("input[value='4']", state="visible")
             await page.click("input[value='4']")
             
@@ -103,10 +104,10 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
                 await page.keyboard.press("Enter")
             except: pass
             
-            # إدخال رقم الجواز
+            # رقم الجواز
             await page.fill("input#passportNo", passport_no)
             
-            # مسح الجنسية القديمة
+            # مسح أي جنسية سابقة لضمان تفعيل الطلب الجديد
             try:
                 await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=2000)
             except: pass
@@ -114,7 +115,7 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
             await page.keyboard.press("Tab")
             unified_number = "Not Found"
             
-            # الخطة: انتظار الاستجابة من الشبكة عند اختيار الجنسية
+            # خطة الاستخراج: مراقبة طلب الشبكة عند اختيار الجنسية
             try:
                 async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=15000) as response_info:
                     await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click()
@@ -125,12 +126,14 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
                     if response.status == 200:
                         data = await response.json()
                         raw_val = data.get("unifiedNumber")
-                        if raw_val: unified_number = str(raw_val).strip()
+                        if raw_val:
+                            unified_number = str(raw_val).strip()
             except: pass
             
             await browser.close()
             return unified_number
         except Exception:
+            await browser.close()
             return "ERROR"
 
 # --- Batch Processing ---
@@ -145,14 +148,14 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
         row = records[i]
         p_num, nat = str(row['Passport Number']).strip(), str(row['Nationality']).strip().upper()
         
-        # حساب الإحصائيات الحالية
+        # حساب الإحصائيات
         elapsed = st.session_state.accumulated_time + (time.time() - start_session)
         rate = (st.session_state.found_counter / (i + 1)) * 100 if (i+1) > 0 else 0
         
-        # --- العرض المطلوب: الإحصائيات بجانب سطر المعالجة ---
+        # --- العرض المطلوب: الإحصائيات مدمجة في سطر واحد ---
         status_area.markdown(f"""
         ### 🔄 Processing {i+1}/{total}: **{p_num}** ({nat}) 
-        **⏱️ Time:** `{format_time(elapsed)}` | **✅ Found:** `{st.session_state.found_counter}/{total}` | **📈 Rate:** `{rate:.1f}%`
+        **⏱️ Time Elapsed:** `{format_time(elapsed)}` | **✅ Found / Total:** `{st.session_state.found_counter}/{total}` | **📈 Success Rate:** `{rate:.1f}%`
         """)
         
         res = await search_single_passport_playwright(p_num, nat, url)
@@ -169,7 +172,7 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
         st.session_state.current_index = i + 1
         progress_bar.progress((i + 1) / total)
 
-        # تحديث جدول النتائج (داخل القائمة المنسدلة)
+        # تحديث الجدول المنسدل
         with table_area:
             st.dataframe(pd.DataFrame(st.session_state.batch_results).style.applymap(color_status, subset=['Status']), use_container_width=True, height=300)
         
@@ -178,7 +181,7 @@ async def run_batch_serial(df, url, status_area, progress_bar, table_area):
     st.session_state.accumulated_time += (time.time() - start_session)
     if st.session_state.current_index >= total: st.session_state.run_state = 'finished'
 
-# --- UI Setup ---
+# --- الواجهة الرسومية ---
 tab1, tab2 = st.tabs(["Single Search", "Batch Processing"])
 
 with tab1:
@@ -198,14 +201,14 @@ with tab1:
         else: st.success(f"Found Unified Number: {st.session_state.single_res}")
 
 with tab2:
-    st.subheader("📊 Batch Processing Control")
+    st.subheader("📊 Batch Processing")
     file = st.file_uploader("Upload Excel File", type=["xlsx"])
     
     if file:
         df = pd.read_excel(file)
         
-        # 1. جدول عرض الملف المرفوع (منسدل ومخفي افتراضياً)
-        with st.expander("📂 Preview Uploaded File Data (Click to show/hide)", expanded=False):
+        # 1. جدول عرض الملف المنسدل والمخفي
+        with st.expander("📂 Preview Uploaded File Data", expanded=False):
             st.dataframe(df, use_container_width=True)
 
         st.markdown("---")
@@ -223,12 +226,12 @@ with tab2:
         if c3.button("⏹️ Reset"): st.session_state.run_state = 'idle'; st.rerun()
 
         st.markdown("---")
-        # منطقة الحالة والتقدم
+        # منطقة الحالة (التي تدمج كل شيء)
         status_area = st.empty()
         progress_bar = st.progress(st.session_state.current_index / len(df) if len(df)>0 else 0)
         
-        # 2. جدول النتائج الحية (منسدل ومخفي افتراضياً)
-        with st.expander("📋 View Live Results Table (Click to show/hide)", expanded=False):
+        # 2. جدول النتائج الحية المنسدل والمخفي
+        with st.expander("📋 View Live Results Table (Optional)", expanded=False):
             table_area = st.empty()
             if st.session_state.batch_results:
                 table_area.dataframe(pd.DataFrame(st.session_state.batch_results).style.applymap(color_status, subset=['Status']), use_container_width=True)
@@ -236,7 +239,7 @@ with tab2:
         if st.session_state.run_state == 'running':
             url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
             asyncio.run(run_batch_serial(df, url, status_area, progress_bar, table_area))
-            if st.session_state.run_state == 'finished': st.success("Batch Completed! 🎉")
+            if st.session_state.run_state == 'finished': st.success("Batch Completed Successfully!")
 
         # تحميل النتائج
         if st.session_state.batch_results:
@@ -244,4 +247,4 @@ with tab2:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
                 final_df.to_excel(tmp.name, index=False)
                 with open(tmp.name, "rb") as f:
-                    st.download_button("📥 Download Results Excel", data=f, file_name="ICP_Results.xlsx")
+                    st.download_button("📥 Download Results Excel", data=f, file_name="ICP_Final_Results.xlsx")
