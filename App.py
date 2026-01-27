@@ -112,7 +112,27 @@ def color_status(val):
 
 async def search_single_passport_playwright(passport_no, nationality, target_url):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # --- تعديل مُهم لـ Streamlit Cloud ---
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-setuid-sandbox",
+                    "--single-process",  # Add this
+                ]
+            )
+        except Exception as e:
+            logging.error(f"Failed to launch browser: {e}")
+            # محاولة ثانية مع خيارات أقل
+            try:
+                browser = await p.chromium.launch(headless=True)
+            except Exception as e2:
+                logging.error(f"Failed to launch browser even with fallback: {e2}")
+                raise e # أعد رمي الخطأ الأصلي
+
         context = await browser.new_context(viewport={'width': 1366, 'height': 768},
                                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         page = await context.new_page()
@@ -192,7 +212,7 @@ with tab1:
     if st.button("🔍 Search Now"):
         if p_in and n_in:
             with st.spinner("Searching..."):
-                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
+                url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
                 res = asyncio.run(search_single_passport_playwright(p_in.strip(), n_in.strip().upper(), url))
                 st.session_state.single_res = res
             st.rerun()
@@ -221,7 +241,7 @@ with tab2:
             if col1.button("Start Batch"):
                 st.session_state.run_state = 'running'
                 with st.spinner("Running batch (serial with delay for stability)..."):
-                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
+                    url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false  "
                     results = asyncio.run(run_batch_serial(df, url))
                     st.session_state.batch_results = results
                 st.success("Batch completed!")
@@ -238,4 +258,3 @@ with tab2:
                     current_df.to_excel(writer, index=False)
                 with open(excel_buffer.name, "rb") as f:
                     st.download_button("Download Results", data=f, file_name="ICP_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
